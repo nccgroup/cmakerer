@@ -1,0 +1,8 @@
+Pipfile.lock
+dist/
+build/
+*.egg-info/
+testing/
+CMakeLists.txt
+*.bak
+.*
