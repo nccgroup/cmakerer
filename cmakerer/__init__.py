@@ -89,7 +89,7 @@ def is_excluded(dirpath, excludelst):
   return False
 
 def is_filtered(dirname, filterlst):
-  if dirname.startswith('.'):
+  if dirname.startswith(b'.'):
     return True
   for f in filterlst:
     if dirname.lower() == f.lower():
@@ -97,7 +97,14 @@ def is_filtered(dirname, filterlst):
   return False
 
 def has_ext(filename, exts):
-  parts = filename.split(os.extsep)
+  spl = None
+  if type(filename) is str:
+    spl = os.extsep
+  elif type(filename) is bytes:
+    spl = os.extsep.encode()
+  else:
+    raise Exception("invalid type of filename: " + str(type(filename)))
+  parts = filename.split(spl)
   if len(parts) == 0:
     return False
   return parts[-1] in exts
@@ -137,16 +144,18 @@ def main():
 
   filterlst = [f[0] for f in args.filter]
 
+  args.source_types = [get_bytes(s) for s in args.source_types]
+  args.header_types = [get_bytes(s) for s in args.header_types]
 
-  code_exts = set(['c', 'h', 'cc', 'cpp', 'hpp', 'hh'])
+  code_exts = set([b'c', b'h', b'cc', b'cpp', b'hpp', b'hh'])
   if len(args.source_types) != 0:
-    st = ','.join(args.source_types).replace(' ','')
-    code_exts = set(st.split(','))
+    st = b','.join(args.source_types).replace(b' ',b'')
+    code_exts = set(st.split(b','))
 
-  header_exts = set(['h', 'hpp', 'hh'])
+  header_exts = set([b'h', b'hpp', b'hh'])
   if len(args.header_types) != 0:
-    ht = ','.join(args.header_types).replace(' ','')
-    header_exts = set(ht.split(','))
+    ht = b','.join(args.header_types).replace(b' ',b'')
+    header_exts = set(ht.split(b','))
 
   cwd = None
   try:
@@ -160,23 +169,23 @@ def main():
   includelst = set([])
   systemlst = set([])
 
-  for root, dirs, files in os.walk('.', topdown=True):
+  for root, dirs, files in os.walk(b'.', topdown=True):
     dirs[:] = [
       d
       for d in dirs
       if not (
         is_filtered(d, filterlst) or
-        is_excluded(root[2:] + os.sep + d, excludelst)
+        is_excluded(root[2:] + os.sep.encode() + d, excludelst)
       )
     ]
 
     for f in files:
       if has_ext(f, code_exts):
-        srcfile = (root[2:] + os.sep + f).replace('\\', '/')
+        srcfile = (root[2:] + os.sep.encode() + f).replace(b'\\', b'/')
         sf = get_bytes(srcfile)
         srcfilelst.append(sf)
         if has_ext(f, header_exts):
-          includelst.add(get_bytes(root[2:].replace('\\', '/')))
+          includelst.add(get_bytes(root[2:].replace(b'\\', b'/')))
 
   cneedle = b'#include'
   needle = b'include'
