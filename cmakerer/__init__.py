@@ -102,6 +102,19 @@ def has_ext(filename, exts):
     return False
   return parts[-1] in exts
 
+def get_bytes(s, *, errors='surrogateescape'):
+  b = None
+  if type(s) is str:
+    try:
+      b = s.encode()
+    except UnicodeEncodeError as e:
+      b = s.encode('utf8', errors=errors)
+  elif type(s) is bytes:
+    b = s
+  else:
+    raise Exception("invalid type of s: " + str(type(s)))
+  return b
+
 def main():
   args = parse_args()
 
@@ -158,9 +171,11 @@ def main():
 
     for f in files:
       if has_ext(f, code_exts):
-        srcfilelst.append((root[2:] + os.sep + f).replace('\\', '/'))
+        srcfile = (root[2:] + os.sep + f).replace('\\', '/')
+        sf = get_bytes(srcfile)
+        srcfilelst.append(sf)
         if has_ext(f, header_exts):
-          includelst.add(root[2:].replace('\\', '/').encode())
+          includelst.add(get_bytes(root[2:].replace('\\', '/')))
 
   cneedle = b'#include'
   needle = b'include'
@@ -207,7 +222,7 @@ def main():
             if system:
               m = b'/' + inc
               for src in srcfilelst:
-                s = src.encode()
+                s = get_bytes(src)
                 if s.endswith(m):
                   rpos = s.find(m)
                   s = s[:rpos]
@@ -243,16 +258,16 @@ def main():
       sys.stderr.write("{}: {}\n".format(srcfile, e))
       raise e
 
-  projname = args.search_root.split('/')[-1].split('\\')[-1].encode()
+  projname = b'"' + get_bytes(args.search_root.split('/')[-1].split('\\')[-1], errors="ignore") + b'"'
   systemlst = [b'"' + inc + b'"' for inc in systemlst]
   systemlst.sort()
   systemstr = b'\n  '.join(systemlst)
   includelst = [b'"' + inc + b'"' for inc in includelst]
   includelst.sort()
   includestr = b'\n  '.join(includelst)
-  srcfilelst = ['"' + src + '"' for src in srcfilelst]
+  srcfilelst = [b'"' + src + b'"' for src in srcfilelst]
   srcfilelst.sort()
-  srcfilestr = '\n  '.join(srcfilelst).encode()
+  srcfilestr = b'\n  '.join(srcfilelst)
 
   output = cmake_template % (projname, systemstr, includestr,
                            projname, srcfilestr)
