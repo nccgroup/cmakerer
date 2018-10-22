@@ -6,7 +6,7 @@ from setuptools import setup
 
 setup(
   name='cmakerer',
-  version='1.0.1',
+  version='1.0.2',
   description='Generates CMakeLists.txt files from arbitrary C/C++ codebases.',
   long_description=open('README.md').read(),
   author='Jeff Dileo',

@@ -121,6 +121,7 @@ def main():
   if args.search_root.endswith('/') or \
      args.search_root.endswith('\\'):
     args.search_root = args.search_root[:-1]
+  args.search_root = os.path.realpath(args.search_root)
 
   excludelst = []
   for ex in args.exclude:
