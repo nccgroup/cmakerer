@@ -6,9 +6,10 @@ from setuptools import setup
 
 setup(
   name='cmakerer',
-  version='1.1.0',
+  version='1.1.1',
   description='Generates CMakeLists.txt files from arbitrary C/C++ codebases.',
   long_description=open('README.md').read(),
+  long_description_content_type='text/markdown',
   author='Jeff Dileo',
   author_email='jeff.dileo@nccgroup.trust',
   url='https://github.com/nccgroup/cmakerer',
