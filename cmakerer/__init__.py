@@ -59,22 +59,32 @@ def parse_args():
                       help='Path to exclude (repatable). ' +
                            'These are relative to the search root and do ' +
                            'not resolve relative path sequences.')
+  parser.add_argument('-X', '--exclude-at', metavar='<path>', type=str, nargs=1,
+                      action='append', default=[],
+                      help='Directory path to exclude direct file ' +
+                            'descendants of (e.g. "-X .", repatable). ' +
+                           'These are relative to the search root and do ' +
+                           'not resolve relative path sequences.')
   parser.add_argument('-!', '--filter', metavar='<segment>', type=str, nargs=1,
                       action='append', default=[],
                       help='Path segments to filter (repatable). ' +
                            'These are used to exclude any path containing a ' +
                            'matching segment (e.g. `-! test` will exlude ' +
                            '`foo/bar/test/**`).')
-  parser.add_argument('-s', '--source-types', metavar='<types,list>', type=str,
-                      nargs=1, action='append', default=[],
-                      help='Comma-delimited list of source file extensions ' +
-                           'to search for. This overrides the defaults.')
   parser.add_argument('-i', '--header-types', metavar='<types,list>', type=str,
                       nargs=1, action='append', default=[],
                       help='Comma-delimited list of header file extensions ' +
                            'to search for. This overrides the defaults.')
-  parser.add_argument('-z', '--exclude-cmake', action='store_true',
-                      help='Shortcut for excluding typical cmake paths ' +
+  parser.add_argument('-s', '--source-types', metavar='<types,list>', type=str,
+                      nargs=1, action='append', default=[],
+                      help='Comma-delimited list of source file extensions ' +
+                           'to search for. This overrides the defaults.')
+  parser.add_argument('-+', '--cpp-headers', action='store_true',
+                      help='Attempt to search for extensionless C++ headers.' +
+                            ' May result in non-source files being pulled ' +
+                            'in, so consider using -X if issues arise.')
+  parser.add_argument('-z', '--filter-cmake', action='store_true',
+                      help='Shortcut for filtering out typical cmake paths ' +
                            '(CMakeFiles, cmake).')
   parser.add_argument('-d', '--debug', action='store_true',
                       help='Debug output.')
@@ -86,10 +96,15 @@ def is_excluded(dirpath, excludelst):
   for ex in excludelst:
     if dirpath == ex:
       return True
+    elif dirpath.startswith(ex + '/'):
+      return True
   return False
 
+def is_excludedat(dirpath, excludeatlst):
+  return dirpath in excludedatlst
+
 def is_filtered(dirname, filterlst):
-  if dirname.startswith(b'.'):
+  if dirname.startswith('.') and dirname != '.':
     return True
   for f in filterlst:
     if dirname.lower() == f.lower():
@@ -97,16 +112,11 @@ def is_filtered(dirname, filterlst):
   return False
 
 def has_ext(filename, exts):
-  spl = None
-  if type(filename) is str:
-    spl = os.extsep
-  elif type(filename) is bytes:
-    spl = os.extsep.encode()
-  else:
-    raise Exception("invalid type of filename: " + str(type(filename)))
-  parts = filename.split(spl)
+  parts = filename.split(os.extsep)
   if len(parts) == 0:
     return False
+  elif len(parts) == 1 and None in exts:
+    return True
   return parts[-1] in exts
 
 def get_bytes(s, *, errors='surrogateescape'):
@@ -128,7 +138,6 @@ def main():
   if args.search_root.endswith('/') or \
      args.search_root.endswith('\\'):
     args.search_root = args.search_root[:-1]
-  args.search_root = os.path.realpath(args.search_root)
 
   excludelst = []
   for ex in args.exclude:
@@ -139,23 +148,39 @@ def main():
       excludelst.append(e[:-1])
     else:
       excludelst.append(e)
-  if args.exclude_cmake:
-    excludelst += ['CMakeFiles', 'cmake']
+  #excludelst = set(excludelst)
 
-  filterlst = [f[0] for f in args.filter]
+  excludeatlst = []
+  for ex in args.exclude_at:
+    e = ex[0]
+    if len(e) < 1:
+      continue
+    if e[-1] in [os.sep,os.altsep]:
+      excludeatlst.append(e[:-1])
+    else:
+      excludeatlst.append(e)
+  excludeatlst = set(excludeatlst)
 
-  args.source_types = [get_bytes(s) for s in args.source_types]
-  args.header_types = [get_bytes(s) for s in args.header_types]
+  filterlst = set([f[0] for f in args.filter])
+  if args.filter_cmake:
+    filterlst |= set(['CMakeFiles', 'cmake', 'cmake-build-debug'])
 
-  code_exts = set([b'c', b'h', b'cc', b'cpp', b'hpp', b'hh'])
-  if len(args.source_types) != 0:
-    st = b','.join(args.source_types).replace(b' ',b'')
-    code_exts = set(st.split(b','))
-
-  header_exts = set([b'h', b'hpp', b'hh'])
+  header_exts = set(['h', 'hpp', 'hh'])
   if len(args.header_types) != 0:
-    ht = b','.join(args.header_types).replace(b' ',b'')
-    header_exts = set(ht.split(b','))
+    hexts = []
+    for hts in args.header_types:
+      hexts += hts[0].split(',')
+    header_exts = set(hexts)
+  if args.cpp_headers:
+    header_exts.add(None)
+
+  code_exts = set(['c', 'cc', 'cpp'])
+  if len(args.source_types) != 0:
+    cexts = []
+    for sts in args.source_types:
+      cexts += sts[0].split(',')
+    code_exts = set(cexts)
+  code_exts = code_exts.union(header_exts)
 
   cwd = None
   try:
@@ -169,23 +194,42 @@ def main():
   includelst = set([])
   systemlst = set([])
 
-  for root, dirs, files in os.walk(b'.', topdown=True):
-    dirs[:] = [
-      d
-      for d in dirs
-      if not (
-        is_filtered(d, filterlst) or
-        is_excluded(root[2:] + os.sep.encode() + d, excludelst)
-      )
-    ]
+  for root, dirs, files in os.walk('.', topdown=True):
+    if is_excluded(root, excludelst): # or is_filtered(root, filterlst):
+      dirs[:] = []
+    else:
+      if root == '.':
+        prefix = ''
+      else:
+        prefix = root[2:] + os.sep
+      dirs[:] = [
+        d
+        for d in dirs
+        if not (
+          is_filtered(d, filterlst) or
+          is_excluded(prefix + d, excludelst)
+        )
+      ]
 
     for f in files:
       if has_ext(f, code_exts):
-        srcfile = (root[2:] + os.sep.encode() + f).replace(b'\\', b'/')
+        if root == '.':
+          srcfile = './' + f
+        else:
+          srcfile = (root[2:] + os.sep + f).replace('\\', '/')
+        if is_excluded(os.path.dirname(srcfile), excludeatlst):
+          continue
+        else:
+          if root == '.':
+            srcfile = f
+
         sf = get_bytes(srcfile)
         srcfilelst.append(sf)
         if has_ext(f, header_exts):
-          includelst.add(get_bytes(root[2:].replace(b'\\', b'/')))
+          if root == '.':
+            includelst.add(b'.')
+          else:
+            includelst.add(get_bytes(root[2:].replace('\\', '/')))
 
   cneedle = b'#include'
   needle = b'include'
@@ -231,15 +275,19 @@ def main():
           if b'/' not in inc:
             if system:
               m = b'/' + inc
+              found = False
               for src in srcfilelst:
                 s = get_bytes(src)
                 if s.endswith(m):
+                  found = True
                   rpos = s.find(m)
                   s = s[:rpos]
                   if args.debug:
                     print(b'adding system include of %s for #include <%s>'
                           % (s, inc))
                   systemlst.add(s)
+              if not found and args.debug:
+                print(b'failed to match %s' % (inc))
             continue
 
           incpath = b'/'.join(inc.split(b'/')[:-1])
