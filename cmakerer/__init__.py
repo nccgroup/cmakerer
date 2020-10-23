@@ -1,4 +1,4 @@
-# Copyright (c) NCC Group, 2018
+# Copyright (c) NCC Group, 2018-2020
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -88,9 +88,26 @@ def parse_args():
                            '(CMakeFiles, cmake).')
   parser.add_argument('-d', '--debug', action='store_true',
                       help='Debug output.')
-  parser.add_argument('search_root', metavar='<root>', type=str,
-                      help='Directory to search.')
-  return parser.parse_args()
+  parser.add_argument('-b', '--base-dir', metavar='<path>', type=str,
+                      help='Base directory of provided search roots.')
+  parser.add_argument('search_roots', metavar='<root>', nargs='+', type=str,
+                      help='Directory to search. If multiple are supplied, ' +
+                           '-b must also be set', default=[])
+  args = parser.parse_args()
+
+  if len(args.search_roots) > 1:
+    if args.base_dir == None:
+      parser.error('-b must be supplied when passing multiple search roots.')
+
+  args.search_roots = [sr[:-1] if (sr.endswith('/') or sr.endswith('\\'))
+                               else sr
+                       for sr in args.search_roots]
+
+  if args.base_dir:
+    if args.base_dir.endswith('/') or args.base_dir.endswith('\\'):
+      args.base_dir = args.base_dir[:-1]
+
+  return args
 
 def is_excluded(dirpath, excludelst):
   for ex in excludelst:
@@ -132,8 +149,277 @@ def get_bytes(s, *, errors='surrogateescape'):
     raise Exception("invalid type of s: " + str(type(s)))
   return b
 
+def generate_excludelst(args):
+  excludelst = []
+  for ex in args.exclude:
+    e = ex[0]
+    if len(e) < 1:
+      continue
+    if e[-1] in [os.sep,os.altsep]:
+      excludelst.append(e[:-1])
+    else:
+      excludelst.append(e)
+  return excludelst
+
+def generate_excludeatlst(args):
+  excludeatlst = []
+  for ex in args.exclude_at:
+    e = ex[0]
+    if len(e) < 1:
+      continue
+    if e[-1] in [os.sep,os.altsep]:
+      excludeatlst.append(e[:-1])
+    else:
+      excludeatlst.append(e)
+  excludeatlst = set(excludeatlst)
+  return excludeatlst
+
+def generate_filterlst(args):
+  filterlst = set([f[0] for f in args.filter])
+  if args.filter_cmake:
+    filterlst |= set(['CMakeFiles', 'cmake', 'cmake-build-debug'])
+  return filterlst
+
+def generate_header_exts(args):
+  header_exts = set(['h', 'hpp', 'hh'])
+  if len(args.header_types) != 0:
+    hexts = []
+    for hts in args.header_types:
+      hexts += hts[0].split(',')
+    header_exts = set(hexts)
+  if args.cpp_headers:
+    header_exts.add(None)
+  return header_exts
+
+def generate_code_exts(args, header_exts):
+  code_exts = set(['c', 'cc', 'cpp'])
+  if len(args.source_types) != 0:
+    cexts = []
+    for sts in args.source_types:
+      cexts += sts[0].split(',')
+    code_exts = set(cexts)
+  code_exts = code_exts.union(header_exts)
+  return code_exts
+
+def search(args, excludelst, excludeatlst, filterlst, header_exts, code_exts):
+  srcfilelst = []
+  includelst = set([])
+  systemlst = set([])
+
+  for root, dirs, files in os.walk('.', topdown=True):
+    if is_excluded(root, excludelst): # or is_filtered(root, filterlst):
+      dirs[:] = []
+    else:
+      if root == '.':
+        prefix = ''
+      else:
+        prefix = root[2:] + os.sep
+      dirs[:] = [
+        d
+        for d in dirs
+        if not (
+          is_filtered(d, filterlst) or
+          is_excluded(prefix + d, excludelst)
+        )
+      ]
+
+    for f in files:
+      if has_ext(f, code_exts):
+        if root == '.':
+          srcfile = './' + f
+        else:
+          srcfile = (root[2:] + os.sep + f).replace('\\', '/')
+        if is_excluded(os.path.dirname(srcfile), excludeatlst):
+          continue
+        else:
+          if root == '.':
+            srcfile = f
+
+        sf = get_bytes(srcfile)
+        srcfilelst.append(sf)
+        if has_ext(f, header_exts):
+          if root == '.':
+            includelst.add(b'.')
+          else:
+            includelst.add(get_bytes(root[2:].replace('\\', '/')))
+
+  cneedle = b'#include'
+  needle = b'include'
+
+  tab = bytes(range(256))
+  d = string.whitespace.encode()
+  for srcfile in srcfilelst:
+    try:
+      with open(srcfile, 'rb') as fd:
+        contents = fd.read()
+        lines = contents.split(b'\n')
+        for line in lines:
+          if needle not in line:
+            continue
+          cramped = line.translate(tab, delete=d)
+          if not cramped.startswith(cneedle):
+            continue
+          rem = line[line.find(needle)+len(needle):].strip()
+          if len(rem) == 0:
+            continue
+          quote = False
+          system = False
+          if rem[0] == b'"'[0]:
+            quote = True
+          elif rem[0] == b'<'[0]:
+            system = True
+          else:
+            continue
+          rem = rem[1:]
+          pos = -1
+          if quote:
+            pos = rem.find(b'"')
+          elif system:
+            pos = rem.find(b'>')
+          if pos == -1:
+            continue
+          inc = rem[:pos]
+          if args.debug:
+            if quote:
+              print(b'found #include "%s"' % inc)
+            elif system:
+              print(b'found #include <%s>' % inc)
+          if b'/' not in inc:
+            if system:
+              m = b'/' + inc
+              found = False
+              for src in srcfilelst:
+                s = get_bytes(src)
+                if s.endswith(m):
+                  found = True
+                  rpos = s.find(m)
+                  s = s[:rpos]
+                  if args.debug:
+                    print(b'adding system include of %s for #include <%s>'
+                          % (s, inc))
+                  systemlst.add(s)
+              if not found and args.debug:
+                print(b'failed to match %s' % (inc))
+            continue
+
+          incpath = b'/'.join(inc.split(b'/')[:-1])
+          npaths = set([])
+          lst = None
+          if quote:
+            lst = includelst
+          elif system:
+            lst = systemlst
+
+          for path in lst:
+            #path = path.encode()
+            if path.endswith(b'/' + incpath):
+              npath = path[:len(path)-len(b'/' + incpath)]
+              npaths.add(npath)
+          for npath in npaths:
+            if args.debug:
+              if quote:
+                print(b'adding include of %s for #include "%s"'
+                      % (npath, inc))
+              elif system:
+                print(b'adding system include of %s for #include <%s>'
+                      % (npath, inc))
+            lst.add(npath)
+    except Exception as e:
+      sys.stderr.write("{}: {}\n".format(srcfile, e))
+      raise e
+
+  return [srcfilelst, includelst, systemlst]
+
+
+def generate_output(args, cwd, systemlst, includelst, srcfilelst):
+  proj_path = ""
+  if args.base_dir:
+    proj_path = args.base_dir
+  else:
+    proj_path = args.search_roots[0]
+
+  projname = b'"' + get_bytes(proj_path.split('/')[-1].split('\\')[-1], errors="ignore") + b'"'
+  systemlst = [b'"' + inc + b'"' for inc in systemlst]
+  systemlst.sort()
+  systemstr = b'\n  '.join(systemlst)
+  includelst = [b'"' + inc + b'"' for inc in includelst]
+  includelst.sort()
+  includestr = b'\n  '.join(includelst)
+  srcfilelst = [b'"' + src + b'"' for src in srcfilelst]
+  srcfilelst.sort()
+  srcfilestr = b'\n  '.join(srcfilelst)
+
+  output = cmake_template % (projname, systemstr, includestr,
+                           projname, srcfilestr)
+
+  if args.output == '-':
+    sys.stdout.buffer.write(output)
+  else:
+    try:
+      os.chdir(cwd)
+    except OSError as e:
+      sys.stderr.write("{}\n".format(e))
+      sys.exit(1)
+    with open(args.output, 'wb') as fd:
+      fd.write(output)
+
 def main():
   args = parse_args()
+
+  excludelst = generate_excludelst(args)
+  excludeatlst = generate_excludeatlst(args)
+  filterlst = generate_filterlst(args)
+  header_exts = generate_header_exts(args)
+  code_exts = generate_code_exts(args, header_exts)
+
+  full_srcfilelst = []
+  full_includelst = set([])
+  full_systemlst = set([])
+
+  cwd = os.getcwd()
+  nwd = None
+  base_dir = b""
+
+  if args.base_dir:
+    base_dir = get_bytes(args.base_dir)
+    try:
+      os.chdir(args.base_dir)
+      nwd = os.getcwd()
+    except OSError as e:
+      sys.stderr.write("{}\n".format(e))
+      sys.exit(1)
+
+  for search_root in args.search_roots:
+    try:
+      os.chdir(search_root)
+    except OSError as e:
+      sys.stderr.write("{}\n".format(e))
+      sys.exit(1)
+
+    srcfilelst, includelst, systemlst = search(args, excludelst, excludeatlst,
+                                               filterlst, header_exts,
+                                               code_exts)
+    prefix = b''
+    if args.base_dir:
+      if search_root != '.':
+        prefix = get_bytes(search_root) + b'/'
+
+    full_srcfilelst += [prefix + sf for sf in srcfilelst]
+    full_includelst |= {prefix + i for i in includelst}
+    full_systemlst |= {prefix + s for s in systemlst}
+
+    try:
+      os.chdir(nwd if nwd else cwd)
+    except OSError as e:
+      sys.stderr.write("{}\n".format(e))
+      sys.exit(1)
+
+  generate_output(args, cwd, full_systemlst, full_includelst, full_srcfilelst)
+
+def old_main():
+  args = parse_args()
+
+  args.search_root = args.search_roots[0]
 
   if args.search_root.endswith('/') or \
      args.search_root.endswith('\\'):
