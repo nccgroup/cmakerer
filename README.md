@@ -28,3 +28,4 @@ cmakerer -o ~/path/to/cpp/code -x src/windows -! tests -z ~/path/to/cpp/code
 * Exclude directory paths with `-x`
 * Exclude (sub)directory segments with `-!`
 * Exclude cmake directories with `-z`
+* Add compiler defines with `-DVAR` or `-DVAR=value`
