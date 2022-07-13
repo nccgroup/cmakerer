@@ -18,7 +18,7 @@ pip3 install --user dist/cmakerer-*.whl
 # Usage
 
 ```bash
-cmakerer -o ~/path/to/cpp/code -x src/windows -! tests -z ~/path/to/cpp/code
+cmakerer -o ~/path/to/cpp/code/CMakeLists.txt -x src/windows -! tests -z ~/path/to/cpp/code
 ```
 
 # Features
